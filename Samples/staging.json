@@ -1,0 +1,11 @@
+{
+  "Strict-Transport-Security": "max-age=300",
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Access-Control-Allow-Origin": "*",
+  "Set-Cookie": [
+    "session=abc; Path=/; HttpOnly; SameSite=Strict",
+    "prefs=xyz; Path=/; Secure; SameSite=None"
+  ]
+}
