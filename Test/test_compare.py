@@ -1,90 +1,85 @@
-# security-header-regression
+"""Tests for the security-header regression tester."""
 
-Catch security-header regressions **between two deployments** — for example,
-staging vs production — before they ship.
+from header_regression.compare import Snapshot, compare
+from header_regression.cli import parse_raw_headers
 
-Instead of scanning arbitrary live sites, it compares two saved *snapshots* of
-response headers. That makes it deterministic, safe to run anywhere, and a
-natural fit for a CI/CD gate: capture headers from your candidate build,
-compare against the known-good baseline, fail the pipeline if security posture
-regressed.
 
-## What it detects
+def snap(label, **headers):
+    return Snapshot.from_dict(label, headers)
 
-- Security headers present in the baseline but **missing** in the candidate
-  (HSTS, CSP, X-Frame-Options, etc.)
-- **HSTS** `max-age` downgrades and loss of `includeSubDomains`
-- **CORS** widening (a specific origin changing to `*`)
-- **Cookie** flag regressions: loss of `Secure` / `HttpOnly`, or `SameSite`
-  weakened from `Strict`/`Lax` to `None`
-- CSP changes (flagged for manual review)
 
-Newly *added* security headers are reported as informational and never fail
-the build.
+def kinds(diffs):
+    return {(d.header, d.kind) for d in diffs}
 
-## Install
 
-```bash
-git clone https://github.com/Divolika/security-header-regression.git
-cd security-header-regression
-pip install -e .
-```
+def test_missing_hsts_is_high():
+    base = snap("prod", **{"Strict-Transport-Security": "max-age=100"})
+    cand = snap("stg")
+    diffs = compare(base, cand)
+    assert ("strict-transport-security", "removed") in kinds(diffs)
+    assert any(d.severity == "HIGH" for d in diffs)
 
-Pure standard library — no runtime dependencies.
 
-## Capturing a snapshot
+def test_hsts_max_age_downgrade():
+    base = snap("prod", **{"Strict-Transport-Security": "max-age=63072000"})
+    cand = snap("stg", **{"Strict-Transport-Security": "max-age=300"})
+    diffs = compare(base, cand)
+    assert any(d.kind == "weakened" and "max-age" in d.message for d in diffs)
 
-A snapshot is just a JSON object of headers. Build one from any `curl -sI`
-output:
 
-```bash
-curl -sI https://app.example.com | header-regression capture -o production.json
-curl -sI https://staging.example.com | header-regression capture -o staging.json
-```
+def test_hsts_lost_include_subdomains():
+    base = snap("prod", **{"Strict-Transport-Security": "max-age=100; includeSubDomains"})
+    cand = snap("stg", **{"Strict-Transport-Security": "max-age=100"})
+    diffs = compare(base, cand)
+    assert any("includeSubDomains" in d.message for d in diffs)
 
-Or write the JSON by hand (see `samples/production.json`).
 
-## Comparing
+def test_cors_widened_to_wildcard():
+    base = snap("prod", **{"Access-Control-Allow-Origin": "https://x.com"})
+    cand = snap("stg", **{"Access-Control-Allow-Origin": "*"})
+    diffs = compare(base, cand)
+    assert any(d.kind == "cors" and d.severity == "HIGH" for d in diffs)
 
-```bash
-header-regression diff production.json staging.json
-```
 
-Example output (from the bundled samples):
+def test_cookie_lost_secure_flag():
+    base = Snapshot.from_dict("prod", {"Set-Cookie": ["s=1; Secure; HttpOnly"]})
+    cand = Snapshot.from_dict("stg", {"Set-Cookie": ["s=1; HttpOnly"]})
+    diffs = compare(base, cand)
+    assert any(d.kind == "cookie" and "Secure" in d.message for d in diffs)
 
-```
-[HIGH] access-control-allow-origin: CORS widened from `https://app.example.com` to wildcard `*`.
-[HIGH] content-security-policy: Security header `content-security-policy` present in baseline but missing in candidate.
-[HIGH] set-cookie:session: Cookie `session` lost the Secure flag.
-[HIGH] strict-transport-security: HSTS max-age dropped from 63072000 to 300.
-[MEDIUM] set-cookie:prefs: Cookie `prefs` SameSite weakened from lax to none.
 
-Summary: 6 differences (4 high, 2 medium)
-```
+def test_cookie_samesite_weakened():
+    base = Snapshot.from_dict("prod", {"Set-Cookie": ["s=1; Secure; SameSite=Strict"]})
+    cand = Snapshot.from_dict("stg", {"Set-Cookie": ["s=1; Secure; SameSite=None"]})
+    diffs = compare(base, cand)
+    assert any("SameSite" in d.message for d in diffs)
 
-Exit codes: `0` no regression at/above threshold, `1` regression found,
-`2` error.
 
-## In CI
+def test_identical_snapshots_no_regression():
+    headers = {
+        "Strict-Transport-Security": "max-age=100; includeSubDomains",
+        "Content-Security-Policy": "default-src 'self'",
+    }
+    base = Snapshot.from_dict("prod", dict(headers))
+    cand = Snapshot.from_dict("stg", dict(headers))
+    assert compare(base, cand) == []
 
-```yaml
-- name: Capture candidate headers
-  run: curl -sI "$STAGING_URL" | header-regression capture -o candidate.json
 
-- name: Check for header regressions
-  run: header-regression diff baseline.json candidate.json --fail-on HIGH
-```
+def test_added_header_is_info_not_regression():
+    base = snap("prod")
+    cand = snap("stg", **{"X-Frame-Options": "DENY"})
+    diffs = compare(base, cand)
+    assert all(d.severity == "INFO" for d in diffs)
 
-Commit `baseline.json` to the repo and update it deliberately when you
-intend to change headers.
 
-## Running the tests
-
-```bash
-pip install pytest
-pytest -q
-```
-
-## License
-
-MIT
+def test_parse_raw_headers():
+    raw = (
+        "HTTP/2 200\r\n"
+        "strict-transport-security: max-age=100\r\n"
+        "set-cookie: a=1; Secure\r\n"
+        "set-cookie: b=2; HttpOnly\r\n"
+    )
+    parsed = parse_raw_headers(raw)
+    assert parsed["strict-transport-security"] == "max-age=100"
+    assert isinstance(parsed["Set-Cookie"], list)
+    assert len(parsed["Set-Cookie"]) == 2
