@@ -1,0 +1,12 @@
+{
+  "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+  "Content-Security-Policy": "default-src 'self'; script-src 'self'",
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Access-Control-Allow-Origin": "https://app.example.com",
+  "Set-Cookie": [
+    "session=abc; Path=/; Secure; HttpOnly; SameSite=Strict",
+    "prefs=xyz; Path=/; Secure; SameSite=Lax"
+  ]
+}
